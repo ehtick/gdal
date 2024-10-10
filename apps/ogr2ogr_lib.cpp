@@ -9,23 +9,7 @@
  * Copyright (c) 2008-2015, Even Rouault <even dot rouault at spatialys.com>
  * Copyright (c) 2015, Faza Mahamood
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  ****************************************************************************/
 
 #include "cpl_port.h"
@@ -133,6 +117,8 @@ struct CopyableGCPs
             CPLFree(pasGCPs);
         }
     }
+
+    CopyableGCPs &operator=(const CopyableGCPs &) = delete;
 };
 }  // namespace gdal::ogr2ogr_lib
 
@@ -433,7 +419,7 @@ struct GDALVectorTranslateOptions
        whose geometry intersects the extents will be selected. The geometries
        will not be clipped unless GDALVectorTranslateOptions::bClipSrc is true.
      */
-    std::shared_ptr<OGRGeometry> poSpatialFilter;
+    std::shared_ptr<OGRGeometry> poSpatialFilter{};
 
     /*! the progress function to use */
     GDALProgressFunc pfnProgress = nullptr;
@@ -743,14 +729,16 @@ typedef struct
 
 class OGRSplitListFieldLayer : public OGRLayer
 {
-    OGRLayer *poSrcLayer;
-    OGRFeatureDefn *poFeatureDefn;
-    ListFieldDesc *pasListFields;
-    int nListFieldCount;
-    int nMaxSplitListSubFields;
+    OGRLayer *poSrcLayer = nullptr;
+    OGRFeatureDefn *poFeatureDefn = nullptr;
+    ListFieldDesc *pasListFields = nullptr;
+    int nListFieldCount = 0;
+    const int nMaxSplitListSubFields;
 
     std::unique_ptr<OGRFeature>
     TranslateFeature(std::unique_ptr<OGRFeature> poSrcFeature);
+
+    CPL_DISALLOW_COPY_ASSIGN(OGRSplitListFieldLayer)
 
   public:
     OGRSplitListFieldLayer(OGRLayer *poSrcLayer, int nMaxSplitListSubFields);
@@ -826,8 +814,7 @@ class OGRSplitListFieldLayer : public OGRLayer
 
 OGRSplitListFieldLayer::OGRSplitListFieldLayer(OGRLayer *poSrcLayerIn,
                                                int nMaxSplitListSubFieldsIn)
-    : poSrcLayer(poSrcLayerIn), poFeatureDefn(nullptr), pasListFields(nullptr),
-      nListFieldCount(0),
+    : poSrcLayer(poSrcLayerIn),
       nMaxSplitListSubFields(
           nMaxSplitListSubFieldsIn < 0 ? INT_MAX : nMaxSplitListSubFieldsIn)
 {
@@ -1569,14 +1556,16 @@ class GDALVectorTranslateWrappedDataset : public GDALDataset
     std::unique_ptr<GDALDriver> m_poDriverToFree{};
     GDALDataset *m_poBase = nullptr;
     OGRSpatialReference *m_poOutputSRS = nullptr;
-    bool m_bTransform = false;
+    const bool m_bTransform = false;
 
     std::vector<std::unique_ptr<OGRLayer>> m_apoLayers{};
-    std::vector<std::unique_ptr<OGRLayer>> m_apoHiddenLayers;
+    std::vector<std::unique_ptr<OGRLayer>> m_apoHiddenLayers{};
 
     GDALVectorTranslateWrappedDataset(GDALDataset *poBase,
                                       OGRSpatialReference *poOutputSRS,
                                       bool bTransform);
+
+    CPL_DISALLOW_COPY_ASSIGN(GDALVectorTranslateWrappedDataset)
 
   public:
     virtual int GetLayerCount() override
@@ -1604,6 +1593,8 @@ class GDALVectorTranslateWrappedLayer : public OGRLayerDecorator
     GDALVectorTranslateWrappedLayer(OGRLayer *poBaseLayer, bool bOwnBaseLayer);
     std::unique_ptr<OGRFeature>
     TranslateFeature(std::unique_ptr<OGRFeature> poSrcFeat);
+
+    CPL_DISALLOW_COPY_ASSIGN(GDALVectorTranslateWrappedLayer)
 
   public:
     virtual ~GDALVectorTranslateWrappedLayer();
@@ -1849,12 +1840,12 @@ void GDALVectorTranslateWrappedDataset::ReleaseResultSet(OGRLayer *poResultsSet)
 
 class OGR2OGRSpatialReferenceHolder
 {
-    OGRSpatialReference *m_poSRS;
+    OGRSpatialReference *m_poSRS = nullptr;
+
+    CPL_DISALLOW_COPY_ASSIGN(OGR2OGRSpatialReferenceHolder)
 
   public:
-    OGR2OGRSpatialReferenceHolder() : m_poSRS(nullptr)
-    {
-    }
+    OGR2OGRSpatialReferenceHolder() = default;
 
     ~OGR2OGRSpatialReferenceHolder()
     {

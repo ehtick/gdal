@@ -7,26 +7,11 @@
  ******************************************************************************
  * Copyright (c) 2015, Even Rouault <even dot rouault at spatialys dot com>
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  ****************************************************************************/
 
 #include "ogr_wfs.h"
+#include "ogrwfsfilter.h"
 #include "cpl_md5.h"
 
 /************************************************************************/
@@ -515,8 +500,8 @@ GDALDataset *OGRWFSJoinLayer::FetchGetFeature()
 
     CPLHTTPDestroyResult(psResult);
 
-    OGRDataSource *l_poDS =
-        (OGRDataSource *)OGROpen(osTmpFileName, FALSE, nullptr);
+    auto l_poDS = std::unique_ptr<GDALDataset>(GDALDataset::Open(
+        osTmpFileName, GDAL_OF_VECTOR, nullptr, nullptr, nullptr));
     if (l_poDS == nullptr)
     {
         if (strstr((const char *)pabyData, "<wfs:FeatureCollection") ==
@@ -534,11 +519,10 @@ GDALDataset *OGRWFSJoinLayer::FetchGetFeature()
     OGRLayer *poLayer = l_poDS->GetLayer(0);
     if (poLayer == nullptr)
     {
-        OGRDataSource::DestroyDataSource(l_poDS);
         return nullptr;
     }
 
-    return l_poDS;
+    return l_poDS.release();
 }
 
 /************************************************************************/
