@@ -486,7 +486,7 @@ GDALCalcCreateVRTDerived(const std::vector<std::string> &inputs,
         ds->GetGeoTransform(out.gt.data());
     }
 
-    CPLXMLNode *root = CPLCreateXMLNode(nullptr, CXT_Element, "VRTDataset");
+    CPLXMLTreeCloser root(CPLCreateXMLNode(nullptr, CXT_Element, "VRTDataset"));
 
     // Collect properties of the different sources, and verity them for
     // consistency.
@@ -507,17 +507,17 @@ GDALCalcCreateVRTDerived(const std::vector<std::string> &inputs,
 
     for (const auto &origExpression : expressions)
     {
-        if (!CreateDerivedBandXML(root, out.nX, out.nY, origExpression, sources,
-                                  sourceProps))
+        if (!CreateDerivedBandXML(root.get(), out.nX, out.nY, origExpression,
+                                  sources, sourceProps))
         {
             return nullptr;
         }
     }
 
-    //CPLDebug("VRT", "%s", CPLSerializeXMLTree(root));
+    //CPLDebug("VRT", "%s", CPLSerializeXMLTree(root.get()));
 
     auto ds = std::make_unique<VRTDataset>(out.nX, out.nY);
-    if (ds->XMLInit(root, "") != CE_None)
+    if (ds->XMLInit(root.get(), "") != CE_None)
     {
         return nullptr;
     };
@@ -531,7 +531,7 @@ GDALCalcCreateVRTDerived(const std::vector<std::string> &inputs,
 }
 
 /************************************************************************/
-/*          GDALRasterEditAlgorithm::GDALRasterEditAlgorithm()          */
+/*          GDALRasterCalcAlgorithm::GDALRasterCalcAlgorithm()          */
 /************************************************************************/
 
 GDALRasterCalcAlgorithm::GDALRasterCalcAlgorithm() noexcept
@@ -540,6 +540,7 @@ GDALRasterCalcAlgorithm::GDALRasterCalcAlgorithm() noexcept
     AddProgressArg();
 
     AddArg(GDAL_ARG_NAME_INPUT, 'i', _("Input raster datasets"), &m_inputs)
+        .SetPositional()
         .SetMinCount(1)
         .SetAutoOpenDataset(false)
         .SetMetaVar("INPUTS");
@@ -555,7 +556,9 @@ GDALRasterCalcAlgorithm::GDALRasterCalcAlgorithm() noexcept
     AddArg("no-check-extent", 0, _("Do not check consistency of input extents"),
            &m_NoCheckExtent);
 
-    AddArg("calc", 0, _("Expression(s) to evaluate"), &m_expr).SetMinCount(1);
+    AddArg("calc", 0, _("Expression(s) to evaluate"), &m_expr)
+        .SetRequired()
+        .SetMinCount(1);
 }
 
 /************************************************************************/

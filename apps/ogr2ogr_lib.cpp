@@ -59,6 +59,7 @@
 #include "ogrlayerdecorator.h"
 #include "ogrsf_frmts.h"
 #include "ogr_wkb.h"
+#include "ogrct_priv.h"
 
 typedef enum
 {
@@ -209,6 +210,9 @@ struct GDALVectorTranslateOptions
 
     /*! PROJ pipeline */
     std::string osCTPipeline{};
+
+    /*! Transform options. */
+    CPLStringList aosCTOptions{};
 
     bool bNullifyOutputSRS = false;
 
@@ -474,6 +478,47 @@ struct TargetLayerInfo
         std::unique_ptr<OGRCoordinateTransformation> m_poCT{};
         CPLStringList m_aosTransformOptions{};
         bool m_bCanInvalidateValidity = true;
+        bool m_bWarnAboutDifferentCoordinateOperations = false;
+        double m_dfLeftX = std::numeric_limits<double>::max();
+        double m_dfLeftY = 0;
+        double m_dfLeftZ = 0;
+        double m_dfRightX = -std::numeric_limits<double>::max();
+        double m_dfRightY = 0;
+        double m_dfRightZ = 0;
+        double m_dfBottomX = 0;
+        double m_dfBottomY = std::numeric_limits<double>::max();
+        double m_dfBottomZ = 0;
+        double m_dfTopX = 0;
+        double m_dfTopY = -std::numeric_limits<double>::max();
+        double m_dfTopZ = 0;
+
+        void UpdateExtremePoints(double dfX, double dfY, double dfZ)
+        {
+            if (dfX < m_dfLeftX)
+            {
+                m_dfLeftX = dfX;
+                m_dfLeftY = dfY;
+                m_dfLeftZ = dfZ;
+            }
+            if (dfX > m_dfRightX)
+            {
+                m_dfRightX = dfX;
+                m_dfRightY = dfY;
+                m_dfRightZ = dfZ;
+            }
+            if (dfY < m_dfBottomY)
+            {
+                m_dfBottomX = dfX;
+                m_dfBottomY = dfY;
+                m_dfBottomZ = dfZ;
+            }
+            if (dfY > m_dfTopY)
+            {
+                m_dfTopX = dfX;
+                m_dfTopY = dfY;
+                m_dfTopZ = 0;
+            }
+        }
     };
 
     std::vector<ReprojectionInfo> m_aoReprojectionInfo{};
@@ -494,6 +539,7 @@ struct TargetLayerInfo
     int m_iRequestedSrcGeomField = -1;
     bool m_bPreserveFID = false;
     const char *m_pszCTPipeline = nullptr;
+    CPLStringList m_aosCTOptions{};
     bool m_bCanAvoidSetFrom = false;
     const char *m_pszSpatSRSDef = nullptr;
     OGRGeometryH m_hSpatialFilter = nullptr;
@@ -501,6 +547,8 @@ struct TargetLayerInfo
     std::vector<int> m_anDateTimeFieldIdx{};
     bool m_bSupportCurves = false;
     OGRArrowArrayStream m_sArrowArrayStream{};
+
+    void CheckSameCoordinateOperation() const;
 };
 
 struct AssociatedLayers
@@ -551,6 +599,7 @@ class SetupTargetLayer
     bool m_bNativeData = false;
     bool m_bNewDataSource = false;
     const char *m_pszCTPipeline = nullptr;
+    CPLStringList m_aosCTOptions{};
 
     std::unique_ptr<TargetLayerInfo>
     Setup(OGRLayer *poSrcLayer, const char *pszNewLayerName,
@@ -840,9 +889,9 @@ bool OGRSplitListFieldLayer::BuildLayerDefn(GDALProgressFunc pfnProgress,
 {
     CPLAssert(poFeatureDefn == nullptr);
 
-    OGRFeatureDefn *poSrcFieldDefn = poSrcLayer->GetLayerDefn();
+    OGRFeatureDefn *poSrcFeatureDefn = poSrcLayer->GetLayerDefn();
 
-    int nSrcFields = poSrcFieldDefn->GetFieldCount();
+    const int nSrcFields = poSrcFeatureDefn->GetFieldCount();
     pasListFields = static_cast<ListFieldDesc *>(
         CPLCalloc(sizeof(ListFieldDesc), nSrcFields));
     nListFieldCount = 0;
@@ -850,7 +899,7 @@ bool OGRSplitListFieldLayer::BuildLayerDefn(GDALProgressFunc pfnProgress,
     /* Establish the list of fields of list type */
     for (int i = 0; i < nSrcFields; ++i)
     {
-        OGRFieldType eType = poSrcFieldDefn->GetFieldDefn(i)->GetType();
+        OGRFieldType eType = poSrcFeatureDefn->GetFieldDefn(i)->GetType();
         if (eType == OFTIntegerList || eType == OFTInteger64List ||
             eType == OFTRealList || eType == OFTStringList)
         {
@@ -929,19 +978,19 @@ bool OGRSplitListFieldLayer::BuildLayerDefn(GDALProgressFunc pfnProgress,
     /* Now let's build the target feature definition */
 
     poFeatureDefn =
-        OGRFeatureDefn::CreateFeatureDefn(poSrcFieldDefn->GetName());
+        OGRFeatureDefn::CreateFeatureDefn(poSrcFeatureDefn->GetName());
     poFeatureDefn->Reference();
     poFeatureDefn->SetGeomType(wkbNone);
 
-    for (int i = 0; i < poSrcFieldDefn->GetGeomFieldCount(); ++i)
+    for (const auto poSrcGeomFieldDefn : poSrcFeatureDefn->GetGeomFields())
     {
-        poFeatureDefn->AddGeomFieldDefn(poSrcFieldDefn->GetGeomFieldDefn(i));
+        poFeatureDefn->AddGeomFieldDefn(poSrcGeomFieldDefn);
     }
 
     int iListField = 0;
-    for (int i = 0; i < nSrcFields; ++i)
+    for (const auto poSrcFieldDefn : poSrcFeatureDefn->GetFields())
     {
-        const OGRFieldType eType = poSrcFieldDefn->GetFieldDefn(i)->GetType();
+        const OGRFieldType eType = poSrcFieldDefn->GetType();
         if (eType == OFTIntegerList || eType == OFTInteger64List ||
             eType == OFTRealList || eType == OFTStringList)
         {
@@ -951,12 +1000,12 @@ bool OGRSplitListFieldLayer::BuildLayerDefn(GDALProgressFunc pfnProgress,
             iListField++;
             if (nMaxOccurrences == 1)
             {
-                OGRFieldDefn oFieldDefn(
-                    poSrcFieldDefn->GetFieldDefn(i)->GetNameRef(),
-                    (eType == OFTIntegerList)     ? OFTInteger
-                    : (eType == OFTInteger64List) ? OFTInteger64
-                    : (eType == OFTRealList)      ? OFTReal
-                                                  : OFTString);
+                OGRFieldDefn oFieldDefn(poSrcFieldDefn->GetNameRef(),
+                                        (eType == OFTIntegerList) ? OFTInteger
+                                        : (eType == OFTInteger64List)
+                                            ? OFTInteger64
+                                        : (eType == OFTRealList) ? OFTReal
+                                                                 : OFTString);
                 poFeatureDefn->AddFieldDefn(&oFieldDefn);
             }
             else
@@ -964,9 +1013,8 @@ bool OGRSplitListFieldLayer::BuildLayerDefn(GDALProgressFunc pfnProgress,
                 for (int j = 0; j < nMaxOccurrences; j++)
                 {
                     CPLString osFieldName;
-                    osFieldName.Printf(
-                        "%s%d", poSrcFieldDefn->GetFieldDefn(i)->GetNameRef(),
-                        j + 1);
+                    osFieldName.Printf("%s%d", poSrcFieldDefn->GetNameRef(),
+                                       j + 1);
                     OGRFieldDefn oFieldDefn(
                         osFieldName.c_str(),
                         (eType == OFTIntegerList)     ? OFTInteger
@@ -980,7 +1028,7 @@ bool OGRSplitListFieldLayer::BuildLayerDefn(GDALProgressFunc pfnProgress,
         }
         else
         {
-            poFeatureDefn->AddFieldDefn(poSrcFieldDefn->GetFieldDefn(i));
+            poFeatureDefn->AddFieldDefn(poSrcFieldDefn);
         }
     }
 
@@ -3044,6 +3092,7 @@ GDALDatasetH GDALVectorTranslate(const char *pszDest, GDALDatasetH hDstDS,
     oSetup.m_pszCTPipeline = psOptions->osCTPipeline.empty()
                                  ? nullptr
                                  : psOptions->osCTPipeline.c_str();
+    oSetup.m_aosCTOptions = psOptions->aosCTOptions;
 
     LayerTranslator oTranslator;
     oTranslator.m_poSrcDS = poDS;
@@ -3204,6 +3253,10 @@ GDALDatasetH GDALVectorTranslate(const char *pszDest, GDALDatasetH hDstDS,
                          "translation from sql statement.");
 
                 nRetCode = 1;
+            }
+            else
+            {
+                psInfo->CheckSameCoordinateOperation();
             }
 
             if (poPassedLayer != poResultSet)
@@ -3438,6 +3491,12 @@ GDALDatasetH GDALVectorTranslate(const char *pszDest, GDALDatasetH hDstDS,
         if (pfnProgress)
         {
             pfnProgress(1.0, "", pProgressArg);
+        }
+
+        for (int iLayer = 0; iLayer < nSrcLayerCount; iLayer++)
+        {
+            if (pasAssocLayers[iLayer].psInfo)
+                pasAssocLayers[iLayer].psInfo->CheckSameCoordinateOperation();
         }
 
         if (!bTargetLayersHaveBeenCreated)
@@ -3688,6 +3747,9 @@ GDALDatasetH GDALVectorTranslate(const char *pszDest, GDALDatasetH hDstDS,
 
                 nRetCode = 1;
             }
+
+            if (psInfo)
+                psInfo->CheckSameCoordinateOperation();
 
             if (poPassedLayer != poLayer)
                 delete poPassedLayer;
@@ -5628,6 +5690,7 @@ SetupTargetLayer::Setup(OGRLayer *poSrcLayer, const char *pszNewLayerName,
         psInfo->m_iRequestedSrcGeomField = -1;
     psInfo->m_bPreserveFID = bPreserveFID;
     psInfo->m_pszCTPipeline = m_pszCTPipeline;
+    psInfo->m_aosCTOptions = m_aosCTOptions;
     psInfo->m_oMapResolved = std::move(oMapResolved);
     for (const auto &kv : psInfo->m_oMapResolved)
     {
@@ -5882,6 +5945,35 @@ SetupCT(TargetLayerInfo *psInfo, OGRLayer *poSrcLayer, bool bTransform,
                     options.SetCoordinateOperation(psInfo->m_pszCTPipeline,
                                                    false);
                 }
+
+                bool bWarnAboutDifferentCoordinateOperations =
+                    poGCPCoordTrans == nullptr &&
+                    !(poSourceSRS && poSourceSRS->IsGeocentric());
+
+                for (const auto &[key, value] :
+                     cpl::IterateNameValue(psInfo->m_aosCTOptions))
+                {
+                    if (EQUAL(key, "ALLOW_BALLPARK"))
+                    {
+                        options.SetBallparkAllowed(CPLTestBool(value));
+                    }
+                    else if (EQUAL(key, "ONLY_BEST"))
+                    {
+                        options.SetOnlyBest(CPLTestBool(value));
+                    }
+                    else if (EQUAL(key, "WARN_ABOUT_DIFFERENT_COORD_OP"))
+                    {
+                        if (!CPLTestBool(value))
+                            bWarnAboutDifferentCoordinateOperations = false;
+                    }
+                    else
+                    {
+                        CPLError(CE_Warning, CPLE_AppDefined,
+                                 "Unknown coordinate transform option: %s",
+                                 key);
+                    }
+                }
+
                 poCT = OGRCreateCoordinateTransformation(poSourceSRS,
                                                          poOutputSRS, options);
                 if (poCT == nullptr)
@@ -5913,7 +6005,12 @@ SetupCT(TargetLayerInfo *psInfo, OGRLayer *poSrcLayer, bool bTransform,
 
                     return false;
                 }
-                poCT = new CompositeCT(poGCPCoordTrans, false, poCT, true);
+                if (poGCPCoordTrans)
+                    poCT = new CompositeCT(poGCPCoordTrans, false, poCT, true);
+                else
+                    psInfo->m_aoReprojectionInfo[iGeom]
+                        .m_bWarnAboutDifferentCoordinateOperations =
+                        bWarnAboutDifferentCoordinateOperations;
                 psInfo->m_aoReprojectionInfo[iGeom].m_poCT.reset(poCT);
                 psInfo->m_aoReprojectionInfo[iGeom].m_bCanInvalidateValidity =
                     !(poGCPCoordTrans == nullptr && poSourceSRS &&
@@ -6158,6 +6255,66 @@ bool LayerTranslator::TranslateArrow(
             }
             memcpy(abyModifiedWKB.data(), pabyWKB, panOffsets[nArrayLength]);
             psGeomArray->buffers[2] = abyModifiedWKB.data();
+
+            // Collect left-most, right-most, top-most, bottom-most coordinates.
+            if (psInfo->m_aoReprojectionInfo[0]
+                    .m_bWarnAboutDifferentCoordinateOperations)
+            {
+                struct OGRWKBPointVisitor final : public OGRWKBPointUpdater
+                {
+                    TargetLayerInfo::ReprojectionInfo &m_info;
+
+                    explicit OGRWKBPointVisitor(
+                        TargetLayerInfo::ReprojectionInfo &info)
+                        : m_info(info)
+                    {
+                    }
+
+                    bool update(bool bNeedSwap, void *x, void *y, void *z,
+                                void * /* m */) override
+                    {
+                        double dfX, dfY, dfZ;
+                        memcpy(&dfX, x, sizeof(double));
+                        memcpy(&dfY, y, sizeof(double));
+                        if (bNeedSwap)
+                        {
+                            CPL_SWAP64PTR(&dfX);
+                            CPL_SWAP64PTR(&dfY);
+                        }
+                        if (z)
+                        {
+                            memcpy(&dfZ, z, sizeof(double));
+                            if (bNeedSwap)
+                            {
+                                CPL_SWAP64PTR(&dfZ);
+                            }
+                        }
+                        else
+                            dfZ = 0;
+                        m_info.UpdateExtremePoints(dfX, dfY, dfZ);
+                        return true;
+                    }
+                };
+
+                OGRWKBPointVisitor oVisitor(psInfo->m_aoReprojectionInfo[0]);
+                const GByte *pabyValidity =
+                    static_cast<const GByte *>(psGeomArray->buffers[0]);
+
+                for (size_t i = 0; i < static_cast<size_t>(nArrayLength); ++i)
+                {
+                    const size_t iShifted =
+                        static_cast<size_t>(i + psGeomArray->offset);
+                    if (!pabyValidity || (pabyValidity[iShifted >> 8] &
+                                          (1 << (iShifted % 8))) != 0)
+                    {
+                        const auto nWKBSize =
+                            panOffsets[iShifted + 1] - panOffsets[iShifted];
+                        OGRWKBUpdatePoints(abyModifiedWKB.data() +
+                                               panOffsets[iShifted],
+                                           nWKBSize, oVisitor);
+                    }
+                }
+            }
 
             std::atomic<bool> atomicRet{true};
             const auto oReprojectionLambda =
@@ -6827,6 +6984,34 @@ bool LayerTranslator::Translate(
                             static_cast<OGRwkbGeometryType>(eGType)));
                     }
 
+                    // Collect left-most, right-most, top-most, bottom-most coordinates.
+                    if (psInfo->m_aoReprojectionInfo[iGeom]
+                            .m_bWarnAboutDifferentCoordinateOperations)
+                    {
+                        struct Visitor : public OGRDefaultConstGeometryVisitor
+                        {
+                            TargetLayerInfo::ReprojectionInfo &m_info;
+
+                            explicit Visitor(
+                                TargetLayerInfo::ReprojectionInfo &info)
+                                : m_info(info)
+                            {
+                            }
+
+                            using OGRDefaultConstGeometryVisitor::visit;
+
+                            void visit(const OGRPoint *point) override
+                            {
+                                m_info.UpdateExtremePoints(point->getX(),
+                                                           point->getY(),
+                                                           point->getZ());
+                            }
+                        };
+
+                        Visitor oVisit(psInfo->m_aoReprojectionInfo[iGeom]);
+                        poDstGeometry->accept(&oVisit);
+                    }
+
                     for (int iIter = 0; iIter < 2; ++iIter)
                     {
                         auto poReprojectedGeom = std::unique_ptr<OGRGeometry>(
@@ -7254,6 +7439,72 @@ LayerTranslator::GetSrcClipGeom(const OGRSpatialReference *poGeomSRS)
     ret.poEnv = poGeom ? &m_oClipSrcEnv : nullptr;
     ret.bGeomIsRectangle = m_bClipDstIsRectangle;
     return ret;
+}
+
+/************************************************************************/
+/*               TargetLayerInfo::CheckSameCoordinateOperation()        */
+/************************************************************************/
+
+void TargetLayerInfo::CheckSameCoordinateOperation() const
+{
+    for (auto &info : m_aoReprojectionInfo)
+    {
+        if (info.m_bWarnAboutDifferentCoordinateOperations &&
+            info.m_dfLeftX <= info.m_dfRightX)
+        {
+            // Start recording if different coordinate operations are
+            // going to be used
+            OGRProjCTDifferentOperationsStart(info.m_poCT.get());
+
+            {
+                CPLErrorStateBackuper oBackuper(CPLQuietErrorHandler);
+                {
+                    double dfX = info.m_dfLeftX;
+                    double dfY = info.m_dfLeftY;
+                    double dfZ = info.m_dfLeftZ;
+                    info.m_poCT->Transform(1, &dfX, &dfY, &dfZ);
+                }
+
+                {
+                    double dfX = info.m_dfRightX;
+                    double dfY = info.m_dfRightY;
+                    double dfZ = info.m_dfRightZ;
+                    info.m_poCT->Transform(1, &dfX, &dfY, &dfZ);
+                }
+
+                {
+                    double dfX = info.m_dfTopX;
+                    double dfY = info.m_dfTopY;
+                    double dfZ = info.m_dfTopZ;
+                    info.m_poCT->Transform(1, &dfX, &dfY, &dfZ);
+                }
+
+                {
+                    double dfX = info.m_dfBottomX;
+                    double dfY = info.m_dfBottomY;
+                    double dfZ = info.m_dfBottomZ;
+                    info.m_poCT->Transform(1, &dfX, &dfY, &dfZ);
+                }
+            }
+
+            if (OGRProjCTDifferentOperationsUsed(info.m_poCT.get()))
+            {
+                CPLError(
+                    CE_Warning, CPLE_AppDefined,
+                    "Several coordinate operations have been used to transform "
+                    "layer %s. Artifacts may appear. You may consider "
+                    "using the -ct_opt ALLOW_BALLPARK=NO and/or "
+                    "-ct_opt ONLY_BEST=YES warping options, or specify "
+                    "a particular coordinate operation with -ct. "
+                    "This warning can be silenced with "
+                    "-ct_opt WARN_ABOUT_DIFFERENT_COORD_OP=NO.",
+                    m_poSrcLayer->GetName());
+            }
+
+            // Stop recording
+            OGRProjCTDifferentOperationsStop(info.m_poCT.get());
+        }
+    }
 }
 
 /************************************************************************/
@@ -7772,6 +8023,13 @@ static std::unique_ptr<GDALArgumentParser> GDALVectorTranslateOptionsGetParser(
             })
         .help(_("Override the default transformation from the source to the "
                 "target CRS."));
+
+    argParser->add_argument("-ct_opt")
+        .metavar("<NAME>=<VALUE>")
+        .append()
+        .action([psOptions](const std::string &s)
+                { psOptions->aosCTOptions.AddString(s.c_str()); })
+        .help(_("Coordinate transform option(s)."));
 
     argParser->add_argument("-spat_srs")
         .metavar("<srs_def>")
