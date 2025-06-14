@@ -171,23 +171,23 @@ class ECDataset final : public GDALDataset
 
   protected:
     double GeoTransform[6];
-    CPLString dname;
-    int isV2;  // V2 bundle format
-    int BSZ;   // Bundle size in tiles
-    int TSZ;   // Tile size in pixels
-    std::vector<Bundle> bundles;
+    CPLString dname{};
+    int isV2{};  // V2 bundle format
+    int BSZ{};   // Bundle size in tiles
+    int TSZ{};   // Tile size in pixels
+    std::vector<Bundle> bundles{};
 
     Bundle &GetBundle(const char *fname);
 
   private:
     CPLErr Initialize(CPLXMLNode *CacheInfo);
     CPLErr InitializeFromJSON(const CPLJSONObject &oRoot);
-    CPLString compression;
-    std::vector<double> resolutions;
+    CPLString compression{};
+    std::vector<double> resolutions{};
     int m_nMinLOD = 0;
-    OGRSpatialReference oSRS;
-    std::vector<GByte> tilebuffer;  // Last read tile, decompressed
-    std::vector<GByte> filebuffer;  // raw tile buffer
+    OGRSpatialReference oSRS{};
+    std::vector<GByte> tilebuffer{};  // Last read tile, decompressed
+    std::vector<GByte> filebuffer{};  // raw tile buffer
 
     OGREnvelope m_sInitialExtent{};
     OGREnvelope m_sFullExtent{};
@@ -225,12 +225,12 @@ class ECBand final : public GDALRasterBand
 
   protected:
   private:
-    int lvl;
-    GDALColorInterp ci;
+    int lvl{};
+    GDALColorInterp ci{};
 
     // Image image;
     void AddOverviews();
-    std::vector<ECBand *> overviews;
+    std::vector<ECBand *> overviews{};
 };
 
 ECDataset::ECDataset() : isV2(true), BSZ(128), TSZ(256)
@@ -538,6 +538,8 @@ class ESRICProxyRasterBand final : public GDALProxyRasterBand
   private:
     GDALRasterBand *m_poUnderlyingBand = nullptr;
 
+    CPL_DISALLOW_COPY_ASSIGN(ESRICProxyRasterBand)
+
   protected:
     GDALRasterBand *RefUnderlyingRasterBand(bool /*bForceOpen*/) const override;
 
@@ -774,8 +776,13 @@ Bundle &ECDataset::GetBundle(const char *fname)
         }
     }
     // No empties, eject one
-    // coverity[dont_call]
-    Bundle &bundle = bundles[rand() % bundles.size()];
+    Bundle &bundle = bundles[
+#ifndef __COVERITY__
+        rand() % bundles.size()
+#else
+        0
+#endif
+    ];
     bundle.Init(fname);
     return bundle;
 }
