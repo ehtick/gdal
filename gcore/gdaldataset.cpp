@@ -361,13 +361,15 @@ GDALDataset::~GDALDataset()
         if (m_poPrivate->hMutex != nullptr)
             CPLDestroyMutex(m_poPrivate->hMutex);
 
-        // coverity[missing_lock]
+#if defined(__COVERITY__) || defined(DEBUG)
+        // Not needed since at destruction there is no risk of concurrent use.
+        std::lock_guard oLock(m_poPrivate->m_oMutexWKT);
+#endif
         CPLFree(m_poPrivate->m_pszWKTCached);
         if (m_poPrivate->m_poSRSCached)
         {
             m_poPrivate->m_poSRSCached->Release();
         }
-        // coverity[missing_lock]
         CPLFree(m_poPrivate->m_pszWKTGCPCached);
         if (m_poPrivate->m_poSRSGCPCached)
         {
@@ -8410,6 +8412,7 @@ void GDALDataset::TemporarilyDropReadWriteLock()
         return;
     }
 
+#ifndef __COVERITY__
     if (m_poPrivate->hMutex)
     {
 #ifdef DEBUG_VERBOSE
@@ -8427,10 +8430,10 @@ void GDALDataset::TemporarilyDropReadWriteLock()
         for (int i = 0; i < nCount + 1; i++)
         {
             // The mutex is recursive
-            // coverity[double_unlock]
             CPLReleaseMutex(m_poPrivate->hMutex);
         }
     }
+#endif
 }
 
 /************************************************************************/
@@ -8448,6 +8451,7 @@ void GDALDataset::ReacquireReadWriteLock()
         return;
     }
 
+#ifndef __COVERITY__
     if (m_poPrivate->hMutex)
     {
 #ifdef DEBUG_VERBOSE
@@ -8468,10 +8472,10 @@ void GDALDataset::ReacquireReadWriteLock()
         for (int i = 0; i < nCount - 1; i++)
         {
             // The mutex is recursive
-            // coverity[double_lock]
             CPLAcquireMutex(m_poPrivate->hMutex, 1000.0);
         }
     }
+#endif
 }
 
 /************************************************************************/

@@ -3921,20 +3921,23 @@ GDALAlgorithm::AddOutputDataTypeArg(std::string *pValue,
 }
 
 /************************************************************************/
-/*                 GDALAlgorithm::AddNodataDataTypeArg()                */
+/*                    GDALAlgorithm::AddNodataArg()                     */
 /************************************************************************/
 
 GDALInConstructionAlgorithmArg &
-GDALAlgorithm::AddNodataDataTypeArg(std::string *pValue, bool noneAllowed,
-                                    const std::string &optionName,
-                                    const char *helpMessage)
+GDALAlgorithm::AddNodataArg(std::string *pValue, bool noneAllowed,
+                            const std::string &optionName,
+                            const char *helpMessage)
 {
-    auto &arg =
-        AddArg(optionName, 0,
-               MsgOrDefault(helpMessage,
-                            _("Assign a specified nodata value to output bands "
-                              "('none', numeric value, 'nan', 'inf', '-inf')")),
-               pValue);
+    auto &arg = AddArg(
+        optionName, 0,
+        MsgOrDefault(helpMessage,
+                     noneAllowed
+                         ? _("Assign a specified nodata value to output bands "
+                             "('none', numeric value, 'nan', 'inf', '-inf')")
+                         : _("Assign a specified nodata value to output bands "
+                             "(numeric value, 'nan', 'inf', '-inf')")),
+        pValue);
     arg.AddValidationAction(
         [this, pValue, noneAllowed, optionName]()
         {
@@ -3945,9 +3948,10 @@ GDALAlgorithm::AddNodataDataTypeArg(std::string *pValue, bool noneAllowed,
                 if (endptr != pValue->c_str() + pValue->size())
                 {
                     ReportError(CE_Failure, CPLE_IllegalArg,
-                                "Value of '%s' should be 'none', a "
+                                "Value of '%s' should be %sa "
                                 "numeric value, 'nan', 'inf' or '-inf'",
-                                optionName.c_str());
+                                optionName.c_str(),
+                                noneAllowed ? "'none', " : "");
                     return false;
                 }
             }
@@ -4104,37 +4108,57 @@ bool GDALAlgorithm::ValidateBandArg() const
     const auto bandArg = GetArg(GDAL_ARG_NAME_BAND);
     const auto inputDatasetArg = GetArg(GDAL_ARG_NAME_INPUT);
     if (bandArg && bandArg->IsExplicitlySet() && inputDatasetArg &&
-        inputDatasetArg->IsExplicitlySet() &&
-        inputDatasetArg->GetType() == GAAT_DATASET &&
+        (inputDatasetArg->GetType() == GAAT_DATASET ||
+         inputDatasetArg->GetType() == GAAT_DATASET_LIST) &&
         (inputDatasetArg->GetDatasetType() & GDAL_OF_RASTER) != 0)
     {
-        auto poDS = inputDatasetArg->Get<GDALArgDatasetValue>().GetDatasetRef();
-        if (poDS)
+        const auto CheckBand = [this](const GDALDataset *poDS, int nBand)
         {
-            const auto CheckBand = [this, poDS](int nBand)
+            if (nBand > poDS->GetRasterCount())
             {
-                if (nBand > poDS->GetRasterCount())
-                {
-                    ReportError(
-                        CE_Failure, CPLE_AppDefined,
-                        "Value of 'band' should be greater or equal than "
-                        "1 and less or equal than %d.",
-                        poDS->GetRasterCount());
-                    return false;
-                }
-                return true;
-            };
+                ReportError(CE_Failure, CPLE_AppDefined,
+                            "Value of 'band' should be greater or equal than "
+                            "1 and less or equal than %d.",
+                            poDS->GetRasterCount());
+                return false;
+            }
+            return true;
+        };
 
+        const auto ValidateForOneDataset =
+            [&bandArg, &CheckBand](const GDALDataset *poDS)
+        {
+            bool l_ret = true;
             if (bandArg->GetType() == GAAT_INTEGER)
             {
-                ret = CheckBand(bandArg->Get<int>());
+                l_ret = CheckBand(poDS, bandArg->Get<int>());
             }
             else if (bandArg->GetType() == GAAT_INTEGER_LIST)
             {
                 for (int nBand : bandArg->Get<std::vector<int>>())
                 {
-                    ret = ret && CheckBand(nBand);
+                    l_ret = l_ret && CheckBand(poDS, nBand);
                 }
+            }
+            return l_ret;
+        };
+
+        if (inputDatasetArg->GetType() == GAAT_DATASET)
+        {
+            auto poDS =
+                inputDatasetArg->Get<GDALArgDatasetValue>().GetDatasetRef();
+            if (poDS && !ValidateForOneDataset(poDS))
+                ret = false;
+        }
+        else
+        {
+            CPLAssert(inputDatasetArg->GetType() == GAAT_DATASET_LIST);
+            for (auto &datasetValue :
+                 inputDatasetArg->Get<std::vector<GDALArgDatasetValue>>())
+            {
+                auto poDS = datasetValue.GetDatasetRef();
+                if (poDS && !ValidateForOneDataset(poDS))
+                    ret = false;
             }
         }
     }

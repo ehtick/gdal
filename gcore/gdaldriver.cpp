@@ -17,6 +17,7 @@
 #include "gdal_rat.h"
 #include "gdalalgorithm.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -520,10 +521,11 @@ CPLErr GDALDriver::DefaultCopyMasks(GDALDataset *poSrcDS, GDALDataset *poDstDS,
                 eErr = poDstBand->CreateMaskBand(nMaskFlags);
                 if (eErr == CE_None)
                 {
-                    // coverity[divide_by_zero]
                     void *pScaledData = GDALCreateScaledProgress(
-                        double(iBandWithMask) / nTotalBandsWithMask,
-                        double(iBandWithMask + 1) / nTotalBandsWithMask,
+                        double(iBandWithMask) /
+                            std::max(1, nTotalBandsWithMask),
+                        double(iBandWithMask + 1) /
+                            std::max(1, nTotalBandsWithMask),
                         pfnProgress, pProgressData);
                     eErr = GDALRasterBandCopyWholeRaster(
                         poSrcBand->GetMaskBand(), poDstBand->GetMaskBand(),
@@ -2910,7 +2912,6 @@ void GDALDriver::DeclareAlgorithm(const std::vector<std::string> &aosPath)
                                      CPLString(osDriverName).tolower()};
     if (!singleton.HasDeclaredSubAlgorithm(path))
     {
-        // coverity[copy_constructor_call]
         auto lambda = [osDriverName]() -> std::unique_ptr<GDALAlgorithm>
         {
             auto poDriver =
@@ -2934,7 +2935,6 @@ void GDALDriver::DeclareAlgorithm(const std::vector<std::string> &aosPath)
 
     path.insert(path.end(), aosPath.begin(), aosPath.end());
 
-    // coverity[copy_constructor_call]
     auto lambda = [osDriverName, aosPath]() -> std::unique_ptr<GDALAlgorithm>
     {
         auto poDriver =
@@ -2946,6 +2946,8 @@ void GDALDriver::DeclareAlgorithm(const std::vector<std::string> &aosPath)
     };
 
     singleton.DeclareAlgorithm(path, std::move(lambda));
+
+    CPL_IGNORE_RET_VAL(osDriverName);
 }
 
 //! @endcond
